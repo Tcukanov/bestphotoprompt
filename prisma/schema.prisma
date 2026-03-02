@@ -1,0 +1,136 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// NextAuth models
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  votes         Vote[]
+  bookmarks     Bookmark[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// Application models
+enum AIModel {
+  MIDJOURNEY
+  FLUX
+  SDXL
+  STABLE_DIFFUSION
+  CHATGPT
+  DALLE
+  GEMINI
+  UNKNOWN
+}
+
+enum PromptStatus {
+  PUBLISHED
+  HIDDEN
+}
+
+model PromptPost {
+  id           String       @id @default(cuid())
+  tweetId      String       @unique
+  tweetUrl     String
+  authorHandle String
+  authorName   String?
+  createdAtX   DateTime
+  rawText      String       @db.Text
+  promptText   String       @db.Text
+  imageUrl     String?      @db.Text
+  imageUrls    String[]
+  embedHtml    String?      @db.Text
+  likeCount    Int          @default(0)
+  repostCount  Int          @default(0)
+  replyCount   Int          @default(0)
+  quoteCount   Int          @default(0)
+  viralScore   Float        @default(0)
+  tags         String[]
+  model        AIModel      @default(UNKNOWN)
+  aspectRatio  String?
+  status       PromptStatus @default(PUBLISHED)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  votes        Vote[]
+  bookmarks    Bookmark[]
+
+  @@index([viralScore])
+  @@index([createdAtX])
+  @@index([status])
+  @@index([model])
+}
+
+model Vote {
+  id           String     @id @default(cuid())
+  userId       String
+  promptPostId String
+  value        Int // +1 or -1
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  promptPost   PromptPost @relation(fields: [promptPostId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, promptPostId])
+  @@index([promptPostId])
+}
+
+model Bookmark {
+  id           String     @id @default(cuid())
+  userId       String
+  promptPostId String
+  createdAt    DateTime   @default(now())
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  promptPost   PromptPost @relation(fields: [promptPostId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, promptPostId])
+  @@index([userId])
+}
