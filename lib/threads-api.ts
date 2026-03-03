@@ -4,12 +4,55 @@
  * Focused on collecting Nano Banana / Gemini photo transformation prompts
  */
 
-// Accounts known to post Gemini / Nano Banana photo prompts
-export const THREADS_PROMPT_ACCOUNTS = [
-  'moskito.man',        // High-quality Gemini photo transformation prompts
-  'googlegeminiprompts', // Gemini / Nano Banana prompts
-  'wito.0',             // AI tools + prompts (mixed Spanish/English)
+// Seed accounts — always included, known to post high-quality prompts
+export const SEED_ACCOUNTS = [
+  'promptronix',
+  'moskito.man',
+  'ajayshahofficial',
+  'gptinsiderai',
+  'ui.johnson',
+  'googlegeminiprompts',
 ];
+
+// Keep the old export name so nothing else breaks
+export const THREADS_PROMPT_ACCOUNTS = SEED_ACCOUNTS;
+
+// Keywords used to discover new prompt accounts via searchUsers
+const DISCOVERY_QUERIES = [
+  'gemini prompt',
+  'nano banana',
+  'ai photo prompt',
+  'nanobanana prompts',
+  'gemini ai photo',
+];
+
+/**
+ * Discover up to `maxTotal` Threads accounts that likely post AI prompts.
+ * Seeds from SEED_ACCOUNTS, then expands via keyword search.
+ */
+export async function discoverAccounts(maxTotal = 30): Promise<string[]> {
+  const client = await getThreadsClient();
+  const pool = new Set<string>(SEED_ACCOUNTS);
+
+  for (const query of DISCOVERY_QUERIES) {
+    if (pool.size >= maxTotal) break;
+    try {
+      const result = await client.searchUsers(query, 10);
+      for (const user of result?.users ?? []) {
+        if (!user.username) continue;
+        // Skip accounts with very few followers — unlikely to have viral content
+        if (user.follower_count != null && user.follower_count < 300) continue;
+        pool.add(user.username);
+        if (pool.size >= maxTotal) break;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    } catch (err) {
+      console.warn(`[Threads] Discovery search failed for "${query}":`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  return Array.from(pool).slice(0, maxTotal);
+}
 
 export interface ThreadsPost {
   id: string;
@@ -57,15 +100,20 @@ async function getThreadsClient() {
   const { ThreadsAPI } = pkg;
 
   const deviceID = process.env.THREADS_DEVICE_ID || 'android-bestphotoprompt';
-  return new ThreadsAPI({ deviceID });
+  const username = process.env.THREADS_USERNAME;
+  const password = process.env.THREADS_PASSWORD;
+
+  return new ThreadsAPI({ deviceID, username, password });
 }
 
 /**
- * Fetch posts from a Threads account and return normalized ThreadsPost[]
+ * Fetch posts from a Threads account, sorted by viral score, returning the top `topN`.
+ * Internally fetches up to `fetchLimit` posts and picks the best ones.
  */
 export async function fetchThreadsUserPosts(
   username: string,
-  limit: number = 25
+  topN: number = 8,
+  fetchLimit: number = 25
 ): Promise<ThreadsPost[]> {
   const client = await getThreadsClient();
 
@@ -82,7 +130,7 @@ export async function fetchThreadsUserPosts(
 
   const results: ThreadsPost[] = [];
 
-  for (const thread of threads.slice(0, limit)) {
+  for (const thread of threads.slice(0, fetchLimit)) {
     const post = thread?.thread_items?.[0]?.post;
     if (!post) continue;
 
@@ -134,7 +182,9 @@ export async function fetchThreadsUserPosts(
     });
   }
 
-  return results;
+  // Return only the most viral posts
+  results.sort((a, b) => b.viralScore - a.viralScore);
+  return results.slice(0, topN);
 }
 
 /**
@@ -166,25 +216,69 @@ export function isGeminiPhotoPrompt(text: string): boolean {
   if (isPromptHiddenInComments(text)) return false;
 
   const geminiSignals = [
+    // Gemini-specific
     /open gemini/i,
     /nano banana/i,
     /gemini.*prompt/i,
     /upload.*photo.*prompt/i,
+    /paste.*prompt/i,
+    /use this prompt/i,
     /gemini app/i,
     /#nanobanana/i,
     /#nanobananaprompts/i,
     /#googlenanobanana/i,
     /#geminiprompt/i,
-    // Generic strong prompt signals — long descriptive text
+    // Generic strong prompt content signals
     /aspect ratio.*\d+:\d+/i,
     /photorealistic.*portrait/i,
     /ultra.*sharp.*macro/i,
     /cinematic.*portrait/i,
     /quality:\s*4k/i,
+    /negative prompt/i,
+    /ultra-realistic.*portrait/i,
+    /4k.*ultra.*hd/i,
   ];
 
   // Must match at least one signal AND have enough text to be a real prompt
   return geminiSignals.some((pattern) => pattern.test(text)) && text.length > 40;
+}
+
+/**
+ * Validate that extracted prompt text is substantive — not a promo, news post,
+ * or engagement-bait with the real content hidden behind an external link.
+ *
+ * Returns true if the text is a real prompt worth saving.
+ */
+export function isSubstantivePrompt(text: string): boolean {
+  if (!text || text.length < 80) return false;
+
+  // Reject: promo / external-link bait
+  const PROMO_PATTERNS = [
+    /join\s+from\s+here/i,
+    /check\s+my\s+(link|bio)/i,
+    /shorturl\.|bit\.ly|tinyurl\.|t\.me\/|linktr\.|beacons\.ai/i,
+    /\d+\s+free\s+prompts?/i,
+    /get\s+(all\s+)?(the\s+)?prompts?\s+(in|to)\s+your\s+DM/i,
+    /comment\s+\S+\s+to\s+(get|receive|unlock|claim)/i,
+    /DM\s+me\s+(for|to\s+get)/i,
+  ];
+  if (PROMO_PATTERNS.some((p) => p.test(text))) return false;
+
+  // Reject: product news / reviews (posts about the AI tool, not an image prompt)
+  const NEWS_PATTERNS = [
+    /just\s+dropped\s+and\s+this/i,
+    /just\s+dropped\s+(and|–|—|:)/i,
+    /now\s+(available|live)\s+on\s+\w/i,
+    /^nano banana\s+\d/i,              // "Nano Banana 2 just..." — version news
+    /is\s+now\s+on\s+(gamma|figma|notion|canva)/i,
+  ];
+  if (NEWS_PATTERNS.some((p) => p.test(text))) return false;
+
+  // Must contain visual/image descriptor language typical of a real AI prompt
+  const VISUAL_SIGNAL =
+    /portrait|cinematic|photograph|studio|lighting|background|wearing|jacket|shirt|hair|face|skin|shadow|bokeh|depth\s+of\s+field|composition|editorial|realistic|8K|4K|UHD|sharp|blur|render/i;
+
+  return VISUAL_SIGNAL.test(text);
 }
 
 /**
@@ -210,13 +304,22 @@ export function extractThreadsPrompt(text: string): string {
   // Bail early if the full prompt is hidden in comments
   if (isPromptHiddenInComments(text)) return '';
 
-  // Only remove the exact Threads/Gemini app boilerplate header lines
-  const EXACT_BOILERPLATE = new Set(['open gemini', 'upload photo', 'upload your photo']);
+  // Remove Threads/Gemini app navigation boilerplate in all their forms:
+  //   "Open Gemini"  /  "1. Open ChatGPT / Gemini📲"  /  "2. Upload Your Photo 📸"  /  "3. Paste the prompt 👇"
+  const BOILERPLATE_PATTERNS = [
+    /^open\s+(gemini|chatgpt|gpt).{0,30}$/i,              // "Open Gemini" / "Open ChatGPT / Gemini📲"
+    /^\d+\.\s*open\s+(gemini|chatgpt|gpt).{0,40}$/i,      // "1. Open Gemini" / "1. Open ChatGPT / Gemini📲"
+    /^upload\s+(your\s+)?(photo|image).{0,20}$/i,          // "Upload Your Photo 📸"
+    /^\d+\.\s*upload\s+(your\s+)?(photo|image).{0,20}$/i,  // "2. Upload Your Photo 📸"
+    /^\d+\.\s*(paste|copy|use)\s+(the\s+)?(prompt|this prompt).*$/i, // "3. Paste the prompt 👇" / "3. Paste the prompt & Replace..."
+    /^gemini\s+ai\s+prompt\.?$/i,                          // "Gemini AI prompt."
+    /^\d+\.\s*gemini\s+ai\s+prompt\.?$/i,
+  ];
 
   const lines = text.split('\n');
   const filteredLines = lines.filter((line) => {
-    const l = line.trim().toLowerCase();
-    return !EXACT_BOILERPLATE.has(l);
+    const l = line.trim();
+    return !BOILERPLATE_PATTERNS.some((p) => p.test(l));
   });
   let cleaned = filteredLines.join('\n');
 
