@@ -10,7 +10,7 @@ import { TweetEmbed } from '@/components/TweetEmbed';
 import { ImageGallery } from '@/components/ImageGallery';
 
 interface PromptPageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 function getSourceInfo(url: string) {
@@ -27,10 +27,11 @@ function resolveImageUrl(url: string): string {
 }
 
 export default async function PromptPage({ params }: PromptPageProps) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
 
   const prompt = await prisma.promptPost.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: {
       votes: session?.user?.id ? { where: { userId: session.user.id } } : false,
     },
@@ -39,7 +40,7 @@ export default async function PromptPage({ params }: PromptPageProps) {
   if (!prompt || prompt.status !== 'PUBLISHED') notFound();
 
   const voteSum = await prisma.vote.aggregate({
-    where: { promptPostId: params.id },
+    where: { promptPostId: id },
     _sum: { value: true },
   });
 
