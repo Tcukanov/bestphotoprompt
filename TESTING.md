@@ -1,6 +1,6 @@
 # Testing Guide
 
-## Manual Testing Checklist
+### Manual Testing Checklist
 
 ### Local Development Tests
 
